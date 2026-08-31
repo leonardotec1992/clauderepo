@@ -377,7 +377,7 @@ class Backtester:
         self.g_shieldTripped = False
         self.g_objTripped = False
 
-        dates = self.df.index
+        dates = list(self.df.index)
         opens = self.df['Open'].values
         highs = self.df['High'].values
         lows = self.df['Low'].values
@@ -389,6 +389,23 @@ class Backtester:
         ema_fasts = self.df['EMA_Fast'].values
         ema_slows = self.df['EMA_Slow'].values
         adxs = self.df['ADX'].values
+
+        dayofyears = self.df.index.dayofyear.values
+        hours = self.df.index.hour.values
+
+        # Vectorized P_UP calculation for all bars
+        rsi_prev = np.roll(rsis, 1); rsi_prev[0] = 50.0
+        atr_clean = np.where(np.isnan(atrs) | (atrs <= 0), 0.01, atrs)
+
+        sRSI = np.clip((50.0 - rsis) / 50.0, -1.0, 1.0)
+        sCCI = np.clip((-ccis) / 150.0, -1.0, 1.0)
+        sSlope = np.clip((rsis - rsi_prev) / 25.0, -1.0, 1.0)
+        sRet = np.clip((closes - opens) / atr_clean, -1.0, 1.0)
+        sTrend = np.clip((closes - ema100s) / atr_clean, -1.0, 1.0)
+
+        prior_logit = logit(self.params['InpPriorUp'])
+        log_odds = prior_logit + self.params['InpW_RSI']*sRSI + self.params['InpW_CCI']*sCCI + self.params['InpW_Slope']*sSlope + self.params['InpW_Return']*sRet + self.params['InpW_Trend']*sTrend
+        p_up_arr = 1.0 / (1.0 + np.exp(-log_odds))
 
         n_bars = len(self.df)
 
@@ -404,7 +421,7 @@ class Backtester:
             ask = open_p + spread_val
 
             # Daily reset check
-            day_of_year = dt.dayofyear
+            day_of_year = dayofyears[i]
             if day_of_year != self.g_dayStamp:
                 self.g_dayStamp = day_of_year
                 # Realized today balance
@@ -480,22 +497,22 @@ class Backtester:
                 continue
             if self.params['Usar_Objetivo'] and self.g_objTripped:
                 continue
-            if not self.in_session(dt):
-                continue
+            if not self.params['Operar_24H']:
+                h = hours[i]
+                p = self.params
+                in_sess = False
+                if p['Sesion_NuevaYork'] and (p['NY_Hora_Inicio'] <= h < p['NY_Hora_Cierre']): in_sess = True
+                elif p['Sesion_Londres'] and (p['Londres_Hora_Inicio'] <= h < p['Londres_Hora_Cierre']): in_sess = True
+                elif p['Sesion_Asia'] and (h >= p['Asia_Hora_Inicio'] or h < p['Asia_Hora_Cierre']): in_sess = True
+                if not in_sess: continue
 
             atr_pts = atr_now / point
             if self.params['InpUseVolGate'] and (atr_pts < self.params['InpATRMinPts'] or atr_pts > self.params['InpATRMaxPts']):
                 continue
 
-            # Compute Posterior Up probability (using completed bar i-1)
+            p_up = p_up_arr[i-1]
             rsi_now = rsis[i-1]
-            rsi_prev = rsis[i-2] if i >= 2 else 50.0
             cci_now = ccis[i-1]
-            close_prev = closes[i-1]
-            open_prev = opens[i-1]
-            ema_prev = ema100s[i-1]
-
-            p_up = compute_posterior_up(rsi_now, rsi_prev, cci_now, atr_now, close_prev, open_prev, ema_prev, self.params)
 
             go_long = (p_up >= self.params['InpThreshold'])
             go_short = (p_up <= 1.0 - self.params['InpThreshold'])
