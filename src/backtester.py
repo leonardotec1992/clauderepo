@@ -136,6 +136,10 @@ class Backtester:
             'StartingLots': 0.03,
             'TakeProfit': 0.0,
             'Max_SL_Puntos': 1000.0,
+            'Layer_Multiplier': 10,  # LM_10 = x1.0
+            'LayerStepATR': 1.0,
+            'LayerLotFactor': 1.0,
+            'AutoCompound': False,
             'Usar_Shield': True,
             'Shield_Pct': 15.0,
             'Usar_Objetivo': True,
@@ -169,6 +173,8 @@ class Backtester:
             'InpUseVolGate': True,
             'InpATRMinPts': 80.0,
             'InpATRMaxPts': 900.0,
+            'InpRiskMode': 0,        # RISK_FIXED_LOT = 0
+            'InpRiskPercent': 0.5,
             'InpSL_ATR': 2.0,
             'InpTP_R': 1.5,
             'InpBE_OffsetPts': 20.0,
@@ -181,6 +187,8 @@ class Backtester:
         if params:
             self.params.update(params)
 
+        self.apply_profile()
+
         self.positions = []
         self.closed_trades = []
         self.equity_curve = []
@@ -191,6 +199,45 @@ class Backtester:
         self.g_dayStartBal = initial_balance
         self.g_shieldTripped = False
         self.g_objTripped = False
+
+    def apply_profile(self):
+        p = self.params
+        self.g_profile = p.get('Perfil_Riesgo', 0)
+
+        # Defaults for MANUAL (0)
+        self.g_shieldMax = p.get('Shield_Pct', 15.0)
+        self.g_riskPct = p.get('InpRiskPercent', 0.5)
+        self.g_maxLayers = p.get('InpMaxLayers', 3)
+        self.g_useLayers = p.get('InpUseLayers', False)
+        self.g_usePercent = (p.get('InpRiskMode', 0) == 1)
+        self.g_objetivoPct = 0.0
+        self.g_bePct = p.get('BE_Activacion', 80.0)
+
+        # Profiles matching ApplyProfile() in BayesianGold_XAU_Panel.mq5
+        if self.g_profile == 1:    # CONSERVADOR
+            self.g_shieldMax = 3.0
+            self.g_riskPct = 0.5
+            self.g_useLayers = True
+            self.g_maxLayers = 6
+            self.g_usePercent = True
+            self.g_objetivoPct = 2.0
+            self.g_bePct = 70.0
+        elif self.g_profile == 2:  # BALANCEADO
+            self.g_shieldMax = 4.0
+            self.g_riskPct = 1.0
+            self.g_useLayers = True
+            self.g_maxLayers = 10
+            self.g_usePercent = True
+            self.g_objetivoPct = 3.0
+            self.g_bePct = 80.0
+        elif self.g_profile == 3:  # AGRESIVO
+            self.g_shieldMax = 6.0
+            self.g_riskPct = 1.8
+            self.g_useLayers = True
+            self.g_maxLayers = 15
+            self.g_usePercent = True
+            self.g_objetivoPct = 5.0
+            self.g_bePct = 80.0
 
     def in_session(self, dt):
         if self.params['Operar_24H']:
@@ -228,18 +275,97 @@ class Backtester:
             return True
         return adx >= self.params['ADX_Minimo']
 
-    def calc_lot(self, balance):
+    def calc_lot(self, balance, sl_dist_price=0.0):
         p = self.params
-        lot = p['StartingLots']
-        if p['Usar_Compuesto']:
-            steps = math.floor(balance / 100.0)
-            if steps < 1: steps = 1
-            lot = p['StartingLots'] * steps * p['Compuesto_Pct']
-        # Normalize lot to min 0.01, step 0.01
+        if not self.g_usePercent:
+            lot = p['StartingLots']
+            if p.get('AutoCompound', False) or p.get('Usar_Compuesto', True):
+                steps = math.floor(balance / 100.0)
+                if steps < 1: steps = 1
+                lot = p['StartingLots'] * steps * p.get('Compuesto_Pct', 1.0)
+            lot = math.floor(lot / 0.01) * 0.01
+            if lot < 0.01: lot = 0.01
+            if lot > 100.0: lot = 100.0
+            return round(lot, 2)
+        else:
+            risk = balance * self.g_riskPct / 100.0
+            loss_per_lot = sl_dist_price * 100.0  # $100 USD per $1.00 move per 1.0 lot in XAUUSD
+            if loss_per_lot <= 0:
+                lot = p['StartingLots']
+            else:
+                lot = risk / loss_per_lot
+            lot = math.floor(lot / 0.01) * 0.01
+            if lot < 0.01: lot = 0.01
+            if lot > 100.0: lot = 100.0
+            return round(lot, 2)
+
+    def count_positions(self):
+        return len(self.positions)
+
+    def net_direction(self):
+        if not self.positions:
+            return 0
+        return 1 if self.positions[0].type == 'BUY' else -1
+
+    def last_entry_price(self, dir_val):
+        if not self.positions:
+            return 0.0
+        if dir_val > 0:
+            return min(pos.open_price for pos in self.positions)
+        else:
+            return max(pos.open_price for pos in self.positions)
+
+    def try_add_layer(self, p_up, ask, bid, atr_now, dt):
+        n_pos = self.count_positions()
+        if n_pos >= self.g_maxLayers:
+            return
+        if atr_now <= 0:
+            return
+        dir_val = self.net_direction()
+        if dir_val == 0:
+            return
+
+        last_entry = self.last_entry_price(dir_val)
+        step = self.params.get('LayerStepATR', 1.0) * atr_now
+
+        add_long = (dir_val > 0 and p_up >= self.params['InpThreshold'] and (last_entry - ask) >= step)
+        add_short = (dir_val < 0 and p_up <= (1.0 - self.params['InpThreshold']) and (bid - last_entry) >= step)
+
+        if not (add_long or add_short):
+            return
+
+        sl_dist = atr_now * self.params['InpSL_ATR']
+        mult_val = self.params.get('Layer_Multiplier', self.params.get('LayerMultiplier', 10))
+        mult = float(mult_val) / 10.0
+        n_capa = n_pos  # 2nd position index is 1
+
+        base_lot = self.calc_lot(self.balance, sl_dist)
+        layer_lot_factor = self.params.get('LayerLotFactor', 1.0)
+        lot = base_lot * layer_lot_factor * (mult ** n_capa)
+
         lot = math.floor(lot / 0.01) * 0.01
         if lot < 0.01: lot = 0.01
         if lot > 100.0: lot = 100.0
-        return round(lot, 2)
+        lot = round(lot, 2)
+
+        if lot <= 0:
+            return
+
+        point = 0.01
+        tp_dist = self.params['TakeProfit'] * point if self.params['TakeProfit'] > 0 else sl_dist * self.params['InpTP_R']
+
+        if add_long:
+            sl = ask - sl_dist
+            tp = ask + tp_dist
+            pos = Position(self.ticket_counter, 'BUY', ask, dt, lot, round(sl, 2), round(tp, 2))
+            self.ticket_counter += 1
+            self.positions.append(pos)
+        elif add_short:
+            sl = bid + sl_dist
+            tp = bid - tp_dist
+            pos = Position(self.ticket_counter, 'SELL', bid, dt, lot, round(sl, 2), round(tp, 2))
+            self.ticket_counter += 1
+            self.positions.append(pos)
 
     def run(self):
         point = 0.01 # 1 point in XAUUSD = 0.01 USD (100 points = $1.00)
@@ -310,13 +436,14 @@ class Backtester:
             daily_gain_pct = (ganancia_hoy / day_start_bal * 100.0) if day_start_bal > 0 else 0.0
 
             # Update Shield & Daily Goal
-            if self.params['Usar_Shield'] and not self.g_shieldTripped and daily_dd_pct >= self.params['Shield_Pct']:
+            if self.params['Usar_Shield'] and not self.g_shieldTripped and daily_dd_pct >= self.g_shieldMax:
                 self.g_shieldTripped = True
                 # Close all
                 self.close_all_positions(bid, ask, dt, "Shield Tripped")
                 floating_pnl = 0.0
 
-            if self.params['Usar_Objetivo'] and not self.g_objTripped and daily_gain_pct >= self.params['Objetivo_Diario']:
+            meta_pct = self.params['Objetivo_Diario'] if self.g_profile == 0 else self.g_objetivoPct
+            if self.params['Usar_Objetivo'] and not self.g_objTripped and meta_pct > 0 and daily_gain_pct >= meta_pct:
                 self.g_objTripped = True
                 self.close_all_positions(bid, ask, dt, "Daily Goal Met")
                 floating_pnl = 0.0
@@ -387,7 +514,7 @@ class Backtester:
                 if rsi_now < 25.0 and cci_now < -150.0: go_short = False
 
             n_pos = len(self.positions)
-            if n_pos > 0 and not self.params['InpUseLayers']:
+            if n_pos > 0 and not self.g_useLayers:
                 continue
             if not self.adx_allows(adxs[i]):
                 continue
@@ -410,21 +537,23 @@ class Backtester:
 
                 tp_dist = self.params['TakeProfit'] * point if self.params['TakeProfit'] > 0 else sl_dist * self.params['InpTP_R']
 
-                lot = self.calc_lot(self.balance)
+                lot = self.calc_lot(self.balance, sl_dist)
                 if go_long:
                     entry_price = ask
                     sl = entry_price - sl_dist
                     tp = entry_price + tp_dist
-                    pos = Position(self.ticket_counter, 'BUY', entry_price, dt, lot, sl, tp)
+                    pos = Position(self.ticket_counter, 'BUY', entry_price, dt, lot, round(sl, 2), round(tp, 2))
                     self.ticket_counter += 1
                     self.positions.append(pos)
                 elif go_short:
                     entry_price = bid
                     sl = entry_price + sl_dist
                     tp = entry_price - tp_dist
-                    pos = Position(self.ticket_counter, 'SELL', entry_price, dt, lot, sl, tp)
+                    pos = Position(self.ticket_counter, 'SELL', entry_price, dt, lot, round(sl, 2), round(tp, 2))
                     self.ticket_counter += 1
                     self.positions.append(pos)
+            elif self.g_useLayers:
+                self.try_add_layer(p_up, ask, bid, atr_now, dt)
 
         # Close remaining positions at end of backtest if still open and account active
         if self.df.empty:
@@ -463,7 +592,7 @@ class Backtester:
                     gain = bid - pos.open_price
                     new_sl = pos.sl
                     if self.params['Usar_Breakeven']:
-                        trig = (bid >= pos.open_price + (pos.tp - pos.open_price) * self.params['BE_Activacion'] / 100.0) if pos.tp > pos.open_price else (gain >= atr)
+                        trig = (bid >= pos.open_price + (pos.tp - pos.open_price) * self.g_bePct / 100.0) if pos.tp > pos.open_price else (gain >= atr)
                         if trig:
                             be = pos.open_price + self.params['InpBE_OffsetPts'] * point
                             if be > new_sl: new_sl = be
@@ -499,7 +628,7 @@ class Backtester:
                     gain = pos.open_price - ask
                     new_sl = pos.sl
                     if self.params['Usar_Breakeven']:
-                        trig = (ask <= pos.open_price - (pos.open_price - pos.tp) * self.params['BE_Activacion'] / 100.0) if (pos.tp < pos.open_price and pos.tp > 0) else (gain >= atr)
+                        trig = (ask <= pos.open_price - (pos.open_price - pos.tp) * self.g_bePct / 100.0) if (pos.tp < pos.open_price and pos.tp > 0) else (gain >= atr)
                         if trig:
                             be = pos.open_price - self.params['InpBE_OffsetPts'] * point
                             if pos.sl == 0 or be < new_sl: new_sl = be
@@ -544,13 +673,14 @@ class Backtester:
 def calculate_metrics(trades_list, equity_df, initial_balance=10000.0):
     if not trades_list:
         return {
-            'trades': 0, 'net_profit': 0.0, 'profit_factor': 0.0,
-            'win_rate': 0.0, 'max_dd_pct': 0.0, 'sharpe_ratio': 0.0,
+            'trades': 0, 'net_profit': 0.0, 'net_profit_pct': 0.0, 'profit_factor': 0.0,
+            'win_rate': 0.0, 'max_dd_pct': 0.0, 'max_dd_usd': 0.0, 'sharpe_ratio': 0.0,
             'ontester_score': 0.0
         }
 
     df_trades = pd.DataFrame(trades_list)
     net_profit = df_trades['NetPnL'].sum()
+    net_profit_pct = (net_profit / initial_balance) * 100.0
     gross_profit = df_trades[df_trades['NetPnL'] > 0]['NetPnL'].sum()
     gross_loss = abs(df_trades[df_trades['NetPnL'] < 0]['NetPnL'].sum())
 
@@ -560,8 +690,10 @@ def calculate_metrics(trades_list, equity_df, initial_balance=10000.0):
     # Drawdown from equity curve
     equity = equity_df['Equity']
     peak = equity.cummax()
-    dd = (peak - equity) / peak * 100.0
-    max_dd_pct = dd.max()
+    dd_usd_series = peak - equity
+    max_dd_usd = dd_usd_series.max()
+    dd_pct_series = (peak - equity) / peak * 100.0
+    max_dd_pct = dd_pct_series.max()
 
     # Daily Sharpe Ratio
     equity_df['DailyReturn'] = equity_df['Equity'].pct_change()
@@ -581,9 +713,11 @@ def calculate_metrics(trades_list, equity_df, initial_balance=10000.0):
     return {
         'trades': trades,
         'net_profit': round(net_profit, 2),
+        'net_profit_pct': round(net_profit_pct, 2),
         'profit_factor': round(profit_factor, 2),
         'win_rate': round(win_rate, 2),
         'max_dd_pct': round(max_dd_pct, 2),
+        'max_dd_usd': round(max_dd_usd, 2),
         'sharpe_ratio': round(sharpe_ratio, 2),
         'ontester_score': round(ontester_score, 2)
     }
