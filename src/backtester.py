@@ -150,6 +150,7 @@ class Backtester:
             'Sesion_Asia': True,     'Asia_Hora_Inicio': 22, 'Asia_Hora_Cierre': 2,
             'Sesion_Londres': True,  'Londres_Hora_Inicio': 2, 'Londres_Hora_Cierre': 11,
             'Usar_Spread_Max': True, 'Spread_Max': 30.0,
+            'Usar_Margen': True, 'Margen_Minimo': 20.0,
             'Usar_EMA_Filter': True, 'EMA_Sep_Extrema': 0.3,
             'Usar_Filtro_ADX': True, 'ADX_Minimo': 25.0,
             'Usar_Compuesto': True,  'Compuesto_Pct': 1.0,
@@ -285,6 +286,15 @@ class Backtester:
                 self.g_shieldTripped = False
                 self.g_objTripped = False
 
+            # Check Margin Call / Stop-out / Bankrupt before processing bar
+            if self.balance <= 0 or self.equity <= 0:
+                if self.positions:
+                    self.close_all_positions(bid, ask, dt, "Stop Out")
+                self.balance = max(0.0, self.balance)
+                self.equity = max(0.0, self.equity)
+                self.equity_curve.append({'Date': dt, 'Balance': self.balance, 'Equity': self.equity})
+                break
+
             # Calculate floating PnL
             floating_pnl = 0.0
             for pos in self.positions:
@@ -315,8 +325,27 @@ class Backtester:
             atr_now = atrs[i-1] if not pd.isna(atrs[i-1]) else 1.0
             self.manage_positions_bar(high_p, low_p, bid, ask, dt, atr_now, point)
 
-            # Update Equity Curve
+            # Recalculate floating PnL after managing positions
+            floating_pnl = 0.0
+            for pos in self.positions:
+                if pos.type == 'BUY':
+                    floating_pnl += (bid - pos.open_price) * 100.0 * pos.lot
+                else:
+                    floating_pnl += (pos.open_price - ask) * 100.0 * pos.lot
+
+            # Update Equity
             current_equity = self.balance + floating_pnl
+            self.equity = current_equity
+
+            # Check Margin Call / Stop-out after position management
+            if self.balance <= 0 or current_equity <= 0:
+                if self.positions:
+                    self.close_all_positions(bid, ask, dt, "Stop Out")
+                self.balance = max(0.0, self.balance)
+                self.equity = max(0.0, self.equity)
+                self.equity_curve.append({'Date': dt, 'Balance': self.balance, 'Equity': self.equity})
+                break
+
             self.equity_curve.append({'Date': dt, 'Balance': self.balance, 'Equity': current_equity})
 
             # Gate checks for new signals
@@ -367,6 +396,12 @@ class Backtester:
             if self.params['Usar_Spread_Max'] and self.params['SpreadPts'] > self.params['Spread_Max']:
                 continue
 
+            # Margin check filter
+            if self.params['Usar_Margen']:
+                # Basic check: balance must be positive to open position
+                if self.balance <= 0 or self.equity <= 0:
+                    continue
+
             # Entry Logic
             if n_pos == 0:
                 sl_dist = atr_now * self.params['InpSL_ATR']
@@ -391,12 +426,13 @@ class Backtester:
                     self.ticket_counter += 1
                     self.positions.append(pos)
 
-        # Close remaining positions at end of backtest
+        # Close remaining positions at end of backtest if still open and account active
         if self.df.empty:
             return
         last_dt = dates[-1]
         last_close = closes[-1]
-        self.close_all_positions(last_close, last_close + spread_val, last_dt, "End of Backtest")
+        if self.positions:
+            self.close_all_positions(last_close, last_close + spread_val, last_dt, "End of Backtest")
 
     def manage_positions_bar(self, high_p, low_p, bid, ask, dt, atr, point):
         remaining = []
