@@ -17,12 +17,12 @@
 
 | Métrica | In-Sample (IS 70%) | Out-Of-Sample (OOS 30%) |
 | :--- | :---: | :---: |
-| **Operaciones** | 406 | 435 |
-| **Ganancia Neta ($)** | $-10002.52 | $-10000.36 |
+| **Operaciones** | 417 | 445 |
+| **Ganancia Neta ($)** | $-10003.08 | $-10001.07 |
 | **Profit Factor (PF)** | 0.74 | 0.58 |
-| **Win Rate (%)** | 35.96% | 34.71% |
+| **Win Rate (%)** | 36.69% | 34.83% |
 | **Max Drawdown (%)** | 100.0% | 100.0% |
-| **Sharpe Ratio** | -0.08 | -0.23 |
+| **Sharpe Ratio** | -0.09 | -0.11 |
 | **Score OnTester** | 0.0 | 0.0 |
 
 ---
