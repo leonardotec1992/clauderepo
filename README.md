@@ -1,0 +1,1 @@
+Bayesian Gold XAU – backtesting 
