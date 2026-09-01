@@ -1,0 +1,7 @@
+Strategy,Trades,Net Profit ($),Win Rate (%),Profit Factor,Sharpe Ratio,Max Drawdown ($),Max Drawdown (%),Avg Win ($),Avg Loss ($)
+TREND (Donchian+EMA) H1 Ticks,8,-45.34,12.5,0.29,-26.3,63.71,0.64,18.37,-9.1
+ORB (30m) M5 Ticks,22,29.22,63.64,2.55,7.95,5.42,0.05,3.44,-2.36
+ORB (60m) M5 Ticks,22,34.97,63.64,2.95,8.99,4.28,0.04,3.78,-2.24
+ORB (90m) M5 Ticks,22,32.86,63.64,2.91,9.25,4.28,0.04,3.57,-2.15
+MOMENTUM (ADX+DI) H1 Ticks,18,-47.11,22.22,0.62,-3.18,57.66,0.58,19.28,-8.87
+PULLBACK (EMA) H1 Ticks,10,-62.49,10.0,0.17,-10.14,56.6,0.57,12.73,-8.36
