@@ -1,0 +1,4 @@
+Strategy,Trades,Net Profit ($),Win Rate (%),Profit Factor,Sharpe Ratio,Max Drawdown ($),Max Drawdown (%),Avg Win ($),Avg Loss ($)
+ORB (30m) M5 Ticks,22,29.22,63.64,2.55,7.95,5.42,0.05,3.44,-2.36
+ORB (60m) M5 Ticks,22,34.97,63.64,2.95,8.99,4.28,0.04,3.78,-2.24
+ORB (90m) M5 Ticks,22,32.86,63.64,2.91,9.25,4.28,0.04,3.57,-2.15
